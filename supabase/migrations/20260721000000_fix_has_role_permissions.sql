@@ -1,0 +1,2 @@
+-- Fix permissions for has_role function
+GRANT EXECUTE ON FUNCTION public.has_role(UUID, public.app_role) TO anon, authenticated, service_role;
