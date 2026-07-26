@@ -1,199 +1,171 @@
 import { createClient } from "@supabase/supabase-js";
+import { MOCK_CATEGORIES, MOCK_TRADERS, MOCK_PRODUCTS } from "../src/lib/mock-data";
 
-const SUPABASE_URL = "https://fznmcmtlrlgcpseiclpz.supabase.co";
-const SUPABASE_KEY = "sb_publishable_ROfVI4jH6sT42Uo-4FSq2A_xDncr7Ik";
+const SUPABASE_URL = process.env.SUPABASE_URL || "https://fznmcmtlrlgcpseiclpz.supabase.co";
+const SUPABASE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.SUPABASE_PUBLISHABLE_KEY || "sb_publishable_ROfVI4jH6sT42Uo-4FSq2A_xDncr7Ik";
+
+console.log(`Using Supabase URL: ${SUPABASE_URL}`);
+console.log(`Using key: ${SUPABASE_KEY.slice(0, 15)}...`);
 
 const supabase = createClient(SUPABASE_URL, SUPABASE_KEY);
 
 async function runSeed() {
   console.log("Seeding Marketplace database...");
 
-  // 0. Authenticate
-  const seedEmail = "seedadmin@example.com";
-  const seedPass = "Password123!";
+  // 1. Seed Categories if empty
+  const { data: existingCategories } = await supabase.from("categories").select("id, slug");
+  let categoryIds: Record<string, string> = {};
 
-  let { data: authRes } = await supabase.auth.signInWithPassword({
-    email: seedEmail,
-    password: seedPass,
+  const categoriesToInsert = MOCK_CATEGORIES.filter(
+    (mc) => !existingCategories?.some((ec) => ec.slug === mc.slug)
+  ).map((mc) => ({
+    name: mc.name,
+    slug: mc.slug,
+  }));
+
+  if (categoriesToInsert.length > 0) {
+    const { data: inserted, error: catErr } = await supabase
+      .from("categories")
+      .insert(categoriesToInsert)
+      .select();
+
+    if (catErr) {
+      console.warn("Category seed error:", catErr.message);
+    } else {
+      (inserted ?? []).forEach((c) => {
+        categoryIds[c.slug] = c.id;
+      });
+    }
+  }
+
+  (existingCategories ?? []).forEach((c) => {
+    categoryIds[c.slug] = c.id;
   });
 
-  if (!authRes.session) {
-    const { data: signUpRes } = await supabase.auth.signUp({
-      email: seedEmail,
-      password: seedPass,
-      options: { data: { name: "Seed Admin" } },
+  // 2. Seed Traders if empty
+  const { data: existingTraders } = await supabase.from("traders").select("id, shop_name");
+  let traderIds: Record<string, string> = {};
+
+  for (let i = 0; i < MOCK_TRADERS.length; i++) {
+    const mt = MOCK_TRADERS[i];
+    const existing = existingTraders?.find((t) => t.shop_name === mt.shop_name);
+
+    if (existing) {
+      traderIds[mt.shop_name] = existing.id;
+      continue;
+    }
+
+    // Create a unique user for this trader
+    const email = `trader_${mt.id}@localmarket.com`;
+    const password = "TraderPassword123!";
+
+    let userId: string;
+    try {
+      const { data: userRes, error: userErr } = await supabase.auth.admin.createUser({
+        email,
+        password,
+        email_confirm: true,
+        user_metadata: { name: mt.shop_name },
+      });
+
+      if (userErr) {
+        if (userErr.message.includes("already registered") || userErr.message.includes("conflict")) {
+          const { data: usersList } = await supabase.auth.admin.listUsers();
+          const foundUser = usersList?.users.find((u) => u.email === email);
+          if (foundUser) {
+            userId = foundUser.id;
+          } else {
+            throw userErr;
+          }
+        } else {
+          throw userErr;
+        }
+      } else {
+        userId = userRes.user.id;
+      }
+    } catch (err: any) {
+      console.warn(`Could not create/retrieve user for ${mt.shop_name}:`, err.message);
+      // Fallback: try to insert using a random UUID (might fail on foreign key if active in DB)
+      userId = "00000000-0000-0000-0000-000000000001";
+    }
+
+    // Ensure they have the 'trader' role in user_roles
+    try {
+      await supabase.from("user_roles").insert({
+        user_id: userId,
+        role: "trader",
+      });
+    } catch (err: any) {
+      // Ignore conflict
+    }
+
+    // Insert trader record
+    const { data: insertedTrader, error: traderErr } = await supabase
+      .from("traders")
+      .insert({
+        user_id: userId,
+        shop_name: mt.shop_name,
+        description: mt.description,
+        address: mt.address,
+        status: "approved",
+      })
+      .select()
+      .maybeSingle();
+
+    if (traderErr) {
+      console.warn(`Trader ${mt.shop_name} seed note:`, traderErr.message);
+      continue;
+    }
+
+    if (insertedTrader) {
+      traderIds[mt.shop_name] = insertedTrader.id;
+    }
+  }
+
+  // Refresh existing traders in map
+  const { data: finalTraders } = await supabase.from("traders").select("id, shop_name");
+  (finalTraders ?? []).forEach((t) => {
+    traderIds[t.shop_name] = t.id;
+  });
+
+  // 3. Seed Products if empty
+  const { data: existingProducts } = await supabase.from("products").select("id, name");
+
+  const productsToInsert = [];
+  for (const mp of MOCK_PRODUCTS) {
+    if (existingProducts?.some((p) => p.name === mp.name)) {
+      continue;
+    }
+
+    const mockCat = MOCK_CATEGORIES.find((c) => c.id === mp.category_id);
+    const catId = mockCat ? categoryIds[mockCat.slug] : Object.values(categoryIds)[0];
+
+    const mockTrader = MOCK_TRADERS.find((t) => t.id === mp.trader_id);
+    const traderId = mockTrader ? traderIds[mockTrader.shop_name] : Object.values(traderIds)[0];
+
+    if (!traderId) {
+      console.warn(`Skipping product ${mp.name} because no trader was found.`);
+      continue;
+    }
+
+    productsToInsert.push({
+      trader_id: traderId,
+      category_id: catId || null,
+      name: mp.name,
+      description: mp.description,
+      price: mp.price,
+      stock: mp.stock,
+      image_url: mp.image_url,
+      is_active: true,
     });
-    authRes = signUpRes;
   }
 
-  const userId = authRes.user?.id || "00000000-0000-0000-0000-000000000001";
-  console.log(`Authenticated user ID: ${userId}`);
-
-  // 1. Seed Categories
-  const categoriesData = [
-    { name: "Baked Goods", slug: "baked-goods" },
-    { name: "Fresh Produce", slug: "fresh-produce" },
-    { name: "Coffee & Tea", slug: "coffee-tea" },
-    { name: "Handmade Crafts", slug: "handmade-crafts" },
-    { name: "Flowers & Plants", slug: "flowers-plants" },
-    { name: "Home & Kitchen", slug: "home-kitchen" },
-  ];
-
-  for (const cat of categoriesData) {
-    const { error } = await supabase.from("categories").upsert(cat, { onConflict: "slug" });
-    if (error) console.warn(`Category ${cat.name} note:`, error.message);
-  }
-
-  const { data: allCats } = await supabase.from("categories").select("*");
-  console.log(`Categories total: ${allCats?.length ?? 0}`);
-  const catMap: Record<string, string> = {};
-  (allCats ?? []).forEach((c) => {
-    catMap[c.slug] = c.id;
-  });
-
-  // 2. Seed Traders
-  const tradersData = [
-    {
-      user_id: userId,
-      shop_name: "The Corner Bakery",
-      description: "Artisanal sourdough, fresh croissants, and daily baked pastries using heritage grains.",
-      address: "12 High Street, Neighborhood Central",
-      status: "approved",
-    },
-    {
-      user_id: userId,
-      shop_name: "Green Meadow Farm",
-      description: "Locally grown organic vegetables, heritage fruit, and farm-fresh produce.",
-      address: "45 Valley Road, Farm Market",
-      status: "approved",
-    },
-    {
-      user_id: userId,
-      shop_name: "Roast & Bean Craft Coffee",
-      description: "Specialty single-origin coffee beans ethically sourced and freshly roasted in small batches.",
-      address: "8 Artisan Lane, Old Town",
-      status: "approved",
-    },
-    {
-      user_id: userId,
-      shop_name: "Bloom & Petal Florist",
-      description: "Fresh seasonal flower arrangements, potted houseplants, and floral gifts.",
-      address: "22 Garden Parade",
-      status: "approved",
-    },
-  ];
-
-  for (const t of tradersData) {
-    const { error } = await supabase.from("traders").insert(t);
-    if (error) console.warn(`Trader ${t.shop_name} note:`, error.message);
-  }
-
-  const { data: allTraders } = await supabase.from("traders").select("*");
-  console.log(`Traders total: ${allTraders?.length ?? 0}`);
-  const traderMap: Record<string, string> = {};
-  (allTraders ?? []).forEach((t) => {
-    traderMap[t.shop_name] = t.id;
-  });
-
-  // 3. Seed Products
-  const bakeryId = traderMap["The Corner Bakery"] || Object.values(traderMap)[0];
-  const farmId = traderMap["Green Meadow Farm"] || Object.values(traderMap)[0];
-  const coffeeId = traderMap["Roast & Bean Craft Coffee"] || Object.values(traderMap)[0];
-  const floristId = traderMap["Bloom & Petal Florist"] || Object.values(traderMap)[0];
-
-  const bakeryCat = catMap["baked-goods"] || Object.values(catMap)[0];
-  const produceCat = catMap["fresh-produce"] || Object.values(catMap)[0];
-  const coffeeCat = catMap["coffee-tea"] || Object.values(catMap)[0];
-  const craftCat = catMap["handmade-crafts"] || Object.values(catMap)[0];
-  const flowerCat = catMap["flowers-plants"] || Object.values(catMap)[0];
-
-  if (bakeryId) {
-    const productsData = [
-      {
-        trader_id: bakeryId,
-        category_id: bakeryCat,
-        name: "Organic Country Sourdough Loaf",
-        description: "Naturally fermented for 24 hours using local stoneground flour. Crispy crust and chewy interior.",
-        price: 4.50,
-        stock: 25,
-        image_url: "https://images.unsplash.com/photo-1589367920969-ab8e050bbb04?w=600&auto=format&fit=crop&q=80",
-        is_active: true,
-      },
-      {
-        trader_id: bakeryId,
-        category_id: bakeryCat,
-        name: "French Butter Croissants (4-Pack)",
-        description: "Flaky, buttery multi-layered croissants baked fresh every morning with Normandy butter.",
-        price: 5.50,
-        stock: 18,
-        image_url: "https://images.unsplash.com/photo-1555507036-ab1f4038808a?w=600&auto=format&fit=crop&q=80",
-        is_active: true,
-      },
-      {
-        trader_id: farmId || bakeryId,
-        category_id: produceCat,
-        name: "Heritage Tomato Harvest Box (1kg)",
-        description: "A colourful assortment of sweet heirloom tomatoes grown locally without synthetic pesticides.",
-        price: 4.20,
-        stock: 30,
-        image_url: "https://images.unsplash.com/photo-1592924357228-91a4daadcfea?w=600&auto=format&fit=crop&q=80",
-        is_active: true,
-      },
-      {
-        trader_id: farmId || bakeryId,
-        category_id: produceCat,
-        name: "Organic Hass Avocados (Net of 4)",
-        description: "Perfectly ripe Hass avocados rich in healthy fats, grown using sustainable farming practices.",
-        price: 3.80,
-        stock: 20,
-        image_url: "https://images.unsplash.com/photo-1523049673857-eb18f1d7b578?w=600&auto=format&fit=crop&q=80",
-        is_active: true,
-      },
-      {
-        trader_id: coffeeId || bakeryId,
-        category_id: coffeeCat,
-        name: "Ethiopian Yirgacheffe Whole Beans (250g)",
-        description: "Light roast with floral jasmine notes, bergamot citrus acidity, and a clean honey finish.",
-        price: 9.50,
-        stock: 40,
-        image_url: "https://images.unsplash.com/photo-1559056199-641a0ac8b55e?w=600&auto=format&fit=crop&q=80",
-        is_active: true,
-      },
-      {
-        trader_id: coffeeId || bakeryId,
-        category_id: coffeeCat,
-        name: "Artisanal Earl Grey Loose Tea (100g)",
-        description: "Black tea infused with natural Italian bergamot oil and cornflower petals.",
-        price: 6.80,
-        stock: 15,
-        image_url: "https://images.unsplash.com/photo-1576092768241-dec231879fc3?w=600&auto=format&fit=crop&q=80",
-        is_active: true,
-      },
-      {
-        trader_id: floristId || bakeryId,
-        category_id: flowerCat,
-        name: "Wildflower Country Bouquet",
-        description: "Hand-tied bouquet featuring seasonal sunflowers, eucalyptus, and wildflowers.",
-        price: 18.00,
-        stock: 12,
-        image_url: "https://images.unsplash.com/photo-1561181286-d3fee7d55364?w=600&auto=format&fit=crop&q=80",
-        is_active: true,
-      },
-      {
-        trader_id: floristId || bakeryId,
-        category_id: craftCat,
-        name: "Hand-Poured Soy Wax Candle (Lavender & Sage)",
-        description: "Made with 100% natural soy wax, essential oils, and an eco cotton wick. 45-hour burn time.",
-        price: 14.00,
-        stock: 15,
-        image_url: "https://images.unsplash.com/photo-1603006905003-be475563bc59?w=600&auto=format&fit=crop&q=80",
-        is_active: true,
-      },
-    ];
-
-    for (const p of productsData) {
-      const { error } = await supabase.from("products").insert(p);
-      if (error) console.warn(`Product ${p.name} note:`, error.message);
+  if (productsToInsert.length > 0) {
+    const { error: prodErr } = await supabase.from("products").insert(productsToInsert);
+    if (prodErr) {
+      console.warn("Product seed error:", prodErr.message);
+    } else {
+      console.log(`Seeded ${productsToInsert.length} products successfully.`);
     }
   }
 
@@ -203,3 +175,4 @@ async function runSeed() {
 }
 
 runSeed();
+
