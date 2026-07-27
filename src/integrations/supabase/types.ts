@@ -292,6 +292,41 @@ export type Database = {
         }
         Relationships: []
       }
+      admin_audit_logs: {
+        Row: {
+          id: string
+          admin_id: string | null
+          action: string
+          target_id: string | null
+          details: Json | null
+          created_at: string
+        }
+        Insert: {
+          id?: string
+          admin_id?: string | null
+          action: string
+          target_id?: string | null
+          details?: Json | null
+          created_at?: string
+        }
+        Update: {
+          id?: string
+          admin_id?: string | null
+          action?: string
+          target_id?: string | null
+          details?: Json | null
+          created_at?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "admin_audit_logs_admin_id_fkey"
+            columns: ["admin_id"]
+            isOneToOne: false
+            referencedRelation: "profiles"
+            referencedColumns: ["id"]
+          }
+        ]
+      }
     }
     Views: {
       [_ in never]: never

@@ -21,6 +21,7 @@ import {
   DollarSign,
   ShieldCheck,
   RefreshCw,
+  ScrollText,
 } from "lucide-react";
 import {
   BarChart,
@@ -155,7 +156,7 @@ function AdminPage() {
 
       {/* Main Tabs */}
       <Tabs value={activeTab} onValueChange={setActiveTab} className="mt-8">
-        <TabsList className="grid w-full grid-cols-2 md:grid-cols-4 h-auto p-1">
+        <TabsList className="grid w-full grid-cols-2 md:grid-cols-5 h-auto p-1">
           <TabsTrigger value="traders" className="gap-2 py-2.5 text-xs font-semibold">
             <Store className="h-4 w-4" /> Trader Approvals
           </TabsTrigger>
@@ -167,6 +168,9 @@ function AdminPage() {
           </TabsTrigger>
           <TabsTrigger value="users" className="gap-2 py-2.5 text-xs font-semibold">
             <Users className="h-4 w-4" /> User Roles
+          </TabsTrigger>
+          <TabsTrigger value="audit-logs" className="gap-2 py-2.5 text-xs font-semibold">
+            <ScrollText className="h-4 w-4" /> Audit Logs
           </TabsTrigger>
         </TabsList>
 
@@ -185,6 +189,10 @@ function AdminPage() {
 
           <TabsContent value="users">
             <UserRolesTab />
+          </TabsContent>
+
+          <TabsContent value="audit-logs">
+            <AuditLogsTab />
           </TabsContent>
         </div>
       </Tabs>
@@ -921,3 +929,151 @@ function UserRolesTab() {
     </div>
   );
 }
+
+/* =========================================================================
+   5. ADMIN AUDIT LOGS TAB
+   ========================================================================= */
+function formatAuditAction(action: string, details: any): string {
+  if (!details) return action;
+  switch (action) {
+    case "create_category":
+      return `Created category "${details.name}" (${details.slug})`;
+    case "update_category":
+      return `Updated category "${details.old_name}" to "${details.new_name}"`;
+    case "delete_category":
+      return `Deleted category "${details.name}"`;
+    case "create_trader":
+      return `Registered trader shop "${details.shop_name}"`;
+    case "approve_trader":
+      return `Approved trader shop "${details.shop_name}"`;
+    case "suspend_trader":
+      return `Suspended trader shop "${details.shop_name}"`;
+    case "update_trader_status":
+      return `Updated trader shop "${details.shop_name}" status from ${details.old_status} to ${details.new_status}`;
+    case "update_trader":
+      return `Updated details for trader shop "${details.shop_name}"`;
+    case "delete_trader":
+      return `Deleted trader shop "${details.shop_name}"`;
+    case "assign_role":
+      return `Assigned role "${details.role}" to user ${details.user_id}`;
+    case "revoke_role":
+      return `Revoked role "${details.role}" from user ${details.user_id}`;
+    case "update_role":
+      return `Updated user ${details.user_id} role from "${details.old_role}" to "${details.new_role}"`;
+    default:
+      return action.replace(/_/g, " ");
+  }
+}
+
+function AuditLogsTab() {
+  const [expandedLogId, setExpandedLogId] = useState<string | null>(null);
+
+  const { data: logs = [], isLoading, refetch } = useQuery({
+    queryKey: ["admin-audit-logs"],
+    queryFn: async () => {
+      const { data, error } = await supabase
+        .from("admin_audit_logs")
+        .select(`
+          *,
+          profiles:admin_id (
+            name
+          )
+        `)
+        .order("created_at", { ascending: false });
+
+      if (error) throw error;
+      return data ?? [];
+    },
+  });
+
+  const getActionBadgeColor = (action: string) => {
+    if (action.startsWith("create_") || action.includes("approve") || action.includes("assign")) {
+      return "bg-emerald-50 dark:bg-emerald-950 text-emerald-700 dark:text-emerald-300 border-emerald-200 dark:border-emerald-900";
+    }
+    if (action.startsWith("update_")) {
+      return "bg-blue-50 dark:bg-blue-950 text-blue-700 dark:text-blue-300 border-blue-200 dark:border-blue-900";
+    }
+    if (action.startsWith("delete_") || action.includes("suspend") || action.includes("revoke")) {
+      return "bg-rose-50 dark:bg-rose-950 text-rose-700 dark:text-rose-300 border-rose-200 dark:border-rose-900";
+    }
+    return "bg-muted text-muted-foreground";
+  };
+
+  return (
+    <div className="space-y-6">
+      <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
+        <div>
+          <h3 className="font-display text-lg font-semibold">Administrative Audit Logs</h3>
+          <p className="text-xs text-muted-foreground">Trace all administrative modifications and database alterations in real-time.</p>
+        </div>
+        <Button variant="outline" size="sm" onClick={() => refetch()} className="gap-1.5 h-8">
+          <RefreshCw className="h-3.5 w-3.5" /> Refresh Logs
+        </Button>
+      </div>
+
+      {isLoading ? (
+        <div className="h-48 rounded-xl border bg-card/50 animate-pulse" />
+      ) : logs.length === 0 ? (
+        <div className="flex flex-col items-center justify-center rounded-xl border border-dashed p-12 text-center">
+          <ScrollText className="h-8 w-8 text-muted-foreground/60" />
+          <h3 className="mt-4 font-semibold text-foreground">No audit logs found</h3>
+          <p className="mt-1 text-xs text-muted-foreground">Admin actions will automatically appear here once database triggers log changes.</p>
+        </div>
+      ) : (
+        <div className="overflow-hidden rounded-xl border bg-card shadow-sm">
+          <table className="w-full text-left text-sm">
+            <thead className="border-b bg-muted/40 text-xs font-semibold text-muted-foreground uppercase tracking-wider">
+              <tr>
+                <th className="px-5 py-3">Timestamp</th>
+                <th className="px-5 py-3">Admin User</th>
+                <th className="px-5 py-3">Action Type</th>
+                <th className="px-5 py-3">Audit Details</th>
+              </tr>
+            </thead>
+            <tbody className="divide-y">
+              {logs.map((log: any) => {
+                const adminName = log.profiles?.name || "System / Automated";
+                const isExpanded = expandedLogId === log.id;
+                return (
+                  <tr key={log.id} className="hover:bg-muted/10 transition-colors align-top">
+                    <td className="px-5 py-4 whitespace-nowrap text-xs text-muted-foreground font-mono">
+                      {new Date(log.created_at).toLocaleString()}
+                    </td>
+                    <td className="px-5 py-4 whitespace-nowrap">
+                      <div className="font-semibold text-foreground">{adminName}</div>
+                      <div className="text-[10px] font-mono text-muted-foreground">{log.admin_id || "system"}</div>
+                    </td>
+                    <td className="px-5 py-4 whitespace-nowrap">
+                      <Badge variant="outline" className={`text-[10px] capitalize px-2 py-0.5 border ${getActionBadgeColor(log.action)}`}>
+                        {log.action.replace(/_/g, " ")}
+                      </Badge>
+                    </td>
+                    <td className="px-5 py-4">
+                      <div className="text-xs text-foreground font-medium">
+                        {formatAuditAction(log.action, log.details)}
+                      </div>
+                      <div className="mt-2">
+                        <button
+                          onClick={() => setExpandedLogId(isExpanded ? null : log.id)}
+                          className="text-[10px] font-semibold text-primary hover:underline"
+                        >
+                          {isExpanded ? "Hide raw JSON" : "Show raw JSON"}
+                        </button>
+                        {isExpanded && (
+                          <pre className="mt-2 p-3 text-[10px] font-mono bg-muted/60 dark:bg-muted/30 rounded-md border text-muted-foreground max-h-40 overflow-y-auto">
+                            {JSON.stringify(log.details, null, 2)}
+                          </pre>
+                        )}
+                      </div>
+                    </td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        </div>
+      )}
+    </div>
+  );
+}
+
