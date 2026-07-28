@@ -37,6 +37,7 @@ import {
 } from "recharts";
 import { supabase } from "@/integrations/supabase/client";
 import { useAuth, type AppRole } from "@/lib/auth-context";
+import { toggleUserRole, grantSelfAdmin } from "@/lib/admin-roles";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -75,14 +76,7 @@ function AdminPage() {
   const handleGrantSelfAdmin = async () => {
     if (!user) return;
     try {
-      const { error } = await supabase
-        .from("user_roles")
-        .insert({ user_id: user.id, role: "admin" });
-
-      if (error && !error.message.includes("duplicate")) {
-        throw error;
-      }
-
+      await grantSelfAdmin();
       await refreshRoles();
       setDevModeOverride(true);
       toast.success("Granted Admin role to your account!");
@@ -805,19 +799,7 @@ function UserRolesTab() {
 
   const toggleRoleMutation = useMutation({
     mutationFn: async ({ userId, targetRole, hasRole }: { userId: string; targetRole: AppRole; hasRole: boolean }) => {
-      if (hasRole) {
-        const { error } = await supabase
-          .from("user_roles")
-          .delete()
-          .eq("user_id", userId)
-          .eq("role", targetRole);
-        if (error) throw error;
-      } else {
-        const { error } = await supabase
-          .from("user_roles")
-          .insert({ user_id: userId, role: targetRole });
-        if (error) throw error;
-      }
+      await toggleUserRole({ data: { userId, targetRole, hasRole } });
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["admin-users-roles"] });
