@@ -9,9 +9,14 @@ import {
 import { supabaseAdmin } from "@/integrations/supabase/client.server";
 
 export type CheckoutSessionInput = {
-  orderId: string;
+  userId: string;
   email: string;
+  deliveryName: string;
+  deliveryPhone: string;
+  deliveryAddress: string;
+  notes?: string | null;
   items: Array<{
+    productId: string;
     name: string;
     price: number;
     quantity: number;
@@ -25,18 +30,64 @@ export const createCheckoutSession = createServerFn({ method: "POST" })
   .handler(async ({ data }) => {
     const request = getRequest();
     const origin = request ? new URL(request.url).origin : "http://localhost:3000";
-    const { orderId, email, items, deliveryFee = 0 } = data;
+    const {
+      userId,
+      email,
+      deliveryName,
+      deliveryPhone,
+      deliveryAddress,
+      notes,
+      items,
+      deliveryFee = 0,
+    } = data;
 
-    if (!orderId || !items || items.length === 0) {
-      throw new Error("Missing required orderId or items");
+    if (!userId || !items || items.length === 0) {
+      throw new Error("Missing required user ID or cart items");
     }
 
-    const totalAmount = items.reduce((sum, item) => sum + item.price * item.quantity, 0) + deliveryFee;
+    const subtotal = items.reduce((sum, item) => sum + item.price * item.quantity, 0);
+    const grandTotal = subtotal + deliveryFee;
 
+    // 1. Create order record using supabaseAdmin (bypasses RLS)
+    const { data: order, error: orderErr } = await supabaseAdmin
+      .from("orders")
+      .insert({
+        user_id: userId,
+        delivery_name: deliveryName.trim(),
+        delivery_phone: deliveryPhone.trim(),
+        delivery_address: deliveryAddress.trim(),
+        notes: notes ? notes.trim() : null,
+        total: grandTotal,
+        status: "pending",
+      })
+      .select("id")
+      .single();
+
+    if (orderErr || !order) {
+      console.error("Server order creation error:", orderErr);
+      throw new Error(orderErr?.message ?? "Failed to create order");
+    }
+
+    const orderId = order.id;
+
+    // 2. Create order items records using supabaseAdmin (bypasses RLS)
+    const orderItemsInsert = items.map((item) => ({
+      order_id: orderId,
+      product_id: item.productId,
+      quantity: item.quantity,
+      price: item.price,
+    }));
+
+    const { error: itemsErr } = await supabaseAdmin.from("order_items").insert(orderItemsInsert);
+    if (itemsErr) {
+      console.error("Server order items creation error:", itemsErr);
+    }
+
+    // 3. Initialize Paystack Transaction
     if (isPaystackConfigured()) {
       const response = await initializePaystackTransaction({
         email,
-        amount: totalAmount,
+        amount: grandTotal,
         callbackUrl: `${origin}/orders?success=true&order_id=${orderId}`,
         metadata: {
           order_id: orderId,
@@ -50,13 +101,13 @@ export const createCheckoutSession = createServerFn({ method: "POST" })
         },
       });
 
-      // Store the transaction reference in the stripe_session_id column (used as payment provider ref)
+      // Store transaction reference
       await supabaseAdmin
         .from("orders")
         .update({ stripe_session_id: response.data.reference })
         .eq("id", orderId);
 
-      return { url: response.data.authorization_url, sessionId: response.data.reference, mock: false };
+      return { url: response.data.authorization_url, sessionId: response.data.reference, orderId, mock: false };
     } else {
       const mockReference = `paystack_mock_${Date.now()}`;
 
@@ -67,7 +118,7 @@ export const createCheckoutSession = createServerFn({ method: "POST" })
 
       const mockSuccessUrl = `${origin}/orders?success=true&reference=${mockReference}&order_id=${orderId}&mock=true`;
 
-      return { url: mockSuccessUrl, sessionId: mockReference, mock: true };
+      return { url: mockSuccessUrl, sessionId: mockReference, orderId, mock: true };
     }
   });
 

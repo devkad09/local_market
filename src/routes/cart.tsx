@@ -100,53 +100,17 @@ function CartPage() {
 
     setIsSubmitting(true);
     try {
-      // 1. Create order record in Supabase
-      const { data: order, error: orderError } = await supabase
-        .from("orders")
-        .insert({
-          user_id: user.id,
-          delivery_name: deliveryName.trim(),
-          delivery_phone: deliveryPhone.trim(),
-          delivery_address: deliveryAddress.trim(),
-          notes: deliveryNotes.trim() || null,
-          total: grandTotal,
-          status: "pending",
-        })
-        .select("id")
-        .single();
-
-      if (orderError || !order) {
-        throw new Error(orderError?.message ?? "Failed to create order");
-      }
-
-      // 2. Create order items records
-      const orderItemsInsert = items.map((item) => ({
-        order_id: order.id,
-        product_id: item.product.id,
-        quantity: item.quantity,
-        price: item.product.price,
-      }));
-
-      const { error: itemsError } = await supabase.from("order_items").insert(orderItemsInsert);
-      if (itemsError) {
-        console.error("Order items error:", itemsError);
-      }
-
-      // Trigger order creation notification email
-      sendOrderEmailNotification({
-        data: {
-          type: "order_created",
-          orderId: order.id,
-          recipientEmail: user.email ?? undefined,
-        },
-      }).catch((err) => console.error("Notification error:", err));
-
-      // 3. Create Checkout Session via server function
+      // Create order & checkout session atomically on server via supabaseAdmin (bypasses RLS)
       const sessionData = await createCheckoutSession({
         data: {
-          orderId: order.id,
+          userId: user.id,
           email: user.email || "customer@example.com",
+          deliveryName: deliveryName.trim(),
+          deliveryPhone: deliveryPhone.trim(),
+          deliveryAddress: deliveryAddress.trim(),
+          notes: deliveryNotes.trim() || null,
           items: items.map((i) => ({
+            productId: i.product.id,
             name: i.product.name,
             price: i.product.price,
             quantity: i.quantity,
@@ -158,6 +122,17 @@ function CartPage() {
 
       if (!sessionData || !sessionData.url) {
         throw new Error("Failed to create payment checkout session");
+      }
+
+      // Trigger order creation notification email
+      if (sessionData.orderId) {
+        sendOrderEmailNotification({
+          data: {
+            type: "order_created",
+            orderId: sessionData.orderId,
+            recipientEmail: user.email ?? undefined,
+          },
+        }).catch((err) => console.error("Notification error:", err));
       }
 
       // Clear local cart state before redirect
