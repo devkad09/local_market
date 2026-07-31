@@ -242,37 +242,42 @@ export const handlePaystackWebhook = createServerFn({ method: "POST" })
 export const getUserOrders = createServerFn({ method: "POST" })
   .validator((data: { userId: string }) => data)
   .handler(async ({ data }) => {
-    const { userId } = data;
-    if (!userId) return [];
+    try {
+      const { userId } = data;
+      if (!userId) return [];
 
-    const { data: orders, error } = await supabaseAdmin
-      .from("orders")
-      .select(`
-        *,
-        order_items (
-          id,
-          quantity,
-          price,
-          products (
+      const { data: orders, error } = await supabaseAdmin
+        .from("orders")
+        .select(`
+          *,
+          order_items (
             id,
-            name,
-            image_url,
-            traders (
+            quantity,
+            price,
+            products (
               id,
-              shop_name
+              name,
+              image_url,
+              traders (
+                id,
+                shop_name
+              )
             )
           )
-        )
-      `)
-      .eq("user_id", userId)
-      .order("created_at", { ascending: false });
+        `)
+        .eq("user_id", userId)
+        .order("created_at", { ascending: false });
 
-    if (error) {
-      console.error("Error fetching user orders via server function:", error);
-      throw new Error(error.message);
+      if (error) {
+        console.error("Error fetching user orders via server function:", error);
+        return [];
+      }
+
+      return orders ?? [];
+    } catch (err) {
+      console.error("Catastrophic error in getUserOrders:", err);
+      return [];
     }
-
-    return orders ?? [];
   });
 
 
