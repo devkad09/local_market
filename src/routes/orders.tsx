@@ -24,7 +24,7 @@ import { useCart } from "@/lib/cart-context";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { toast } from "sonner";
-import { verifyPaymentAndConfirmOrder } from "@/lib/server-checkout";
+import { verifyPaymentAndConfirmOrder, getUserOrders } from "@/lib/server-checkout";
 
 const ordersSearchSchema = z.object({
   success: z.union([z.boolean(), z.string()]).optional(),
@@ -138,38 +138,20 @@ function OrdersPage() {
     };
   }, [user, queryClient]);
 
-  // Fetch orders with order_items and product details
+  // Fetch orders with order_items and product details via server function (bypasses RLS limits)
   const { data: orders = [], isLoading } = useQuery({
     queryKey: ["user-orders", user?.id],
     queryFn: async () => {
       if (!user) return [];
-      const { data, error } = await supabase
-        .from("orders")
-        .select(`
-          *,
-          order_items (
-            id,
-            quantity,
-            price,
-            products (
-              id,
-              name,
-              image_url,
-              traders (
-                id,
-                shop_name
-              )
-            )
-          )
-        `)
-        .eq("user_id", user.id)
-        .order("created_at", { ascending: false });
-
-      if (error) {
-        console.error("Error fetching user orders:", error);
+      try {
+        const data = await getUserOrders({
+          data: { userId: user.id },
+        });
+        return data ?? [];
+      } catch (err) {
+        console.error("Error fetching user orders via server:", err);
         return [];
       }
-      return data ?? [];
     },
     enabled: !!user,
   });

@@ -239,3 +239,40 @@ export const handlePaystackWebhook = createServerFn({ method: "POST" })
     return { received: true };
   });
 
+export const getUserOrders = createServerFn({ method: "POST" })
+  .validator((data: { userId: string }) => data)
+  .handler(async ({ data }) => {
+    const { userId } = data;
+    if (!userId) return [];
+
+    const { data: orders, error } = await supabaseAdmin
+      .from("orders")
+      .select(`
+        *,
+        order_items (
+          id,
+          quantity,
+          price,
+          products (
+            id,
+            name,
+            image_url,
+            traders (
+              id,
+              shop_name
+            )
+          )
+        )
+      `)
+      .eq("user_id", userId)
+      .order("created_at", { ascending: false });
+
+    if (error) {
+      console.error("Error fetching user orders via server function:", error);
+      throw new Error(error.message);
+    }
+
+    return orders ?? [];
+  });
+
+
