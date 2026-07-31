@@ -106,7 +106,7 @@ function OrdersPage() {
           }
         } catch (err: any) {
           console.error("Payment verification error:", err);
-          toast.error("Failed to verify payment");
+          toast.error(err?.message || "Failed to verify payment");
         }
       })();
     }

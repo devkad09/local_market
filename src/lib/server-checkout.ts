@@ -145,6 +145,7 @@ export const verifyPaymentAndConfirmOrder = createServerFn({ method: "POST" })
     let paymentSucceeded = false;
     let transactionRef = reference;
     let finalAmount = order.total;
+    let verificationErrorMessage = "Payment verification failed";
 
     if (reference.startsWith("paystack_mock_")) {
       paymentSucceeded = true;
@@ -155,10 +156,16 @@ export const verifyPaymentAndConfirmOrder = createServerFn({ method: "POST" })
           paymentSucceeded = true;
           transactionRef = response.data.reference;
           finalAmount = response.data.amount / 100; // Paystack returns amount in pesewas
+        } else {
+          verificationErrorMessage = `Paystack status: ${response.data?.status || response.message || "Unverified"}`;
         }
       } catch (err: any) {
         console.error(`Paystack verification error: ${err.message}`);
+        verificationErrorMessage = `Paystack API error: ${err.message}`;
       }
+    } else {
+      // Secret key is missing or invalid in server process.env
+      verificationErrorMessage = "PAYSTACK_SECRET_KEY is missing on Vercel. Please add PAYSTACK_SECRET_KEY in Vercel Environment Variables.";
     }
 
     if (paymentSucceeded) {
@@ -186,7 +193,7 @@ export const verifyPaymentAndConfirmOrder = createServerFn({ method: "POST" })
       return { success: true };
     }
 
-    return { success: false, error: "Payment verification failed" };
+    return { success: false, error: verificationErrorMessage };
   });
 
 export const handlePaystackWebhook = createServerFn({ method: "POST" })
