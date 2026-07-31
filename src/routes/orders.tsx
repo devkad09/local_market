@@ -17,6 +17,7 @@ import {
   Phone,
   Mail,
   Radio,
+  MessageCircle,
 } from "lucide-react";
 import { supabase } from "@/integrations/supabase/client";
 import { useAuth } from "@/lib/auth-context";
@@ -388,6 +389,24 @@ function OrdersPage() {
                           "{order.notes}"
                         </p>
                       )}
+                      <div className="pt-2 border-t mt-2">
+                        <Button
+                          asChild
+                          variant="outline"
+                          size="sm"
+                          className="w-full text-xs gap-1.5 text-emerald-700 border-emerald-300 hover:bg-emerald-50 dark:hover:bg-emerald-950"
+                        >
+                          <a
+                            href={`https://wa.me/?text=${encodeURIComponent(
+                              `Hello! I am following up on my Marketplace Order #${order.id.slice(0, 8)}. Total: GH₵${order.total.toFixed(2)}. Delivery Address: ${order.delivery_address}`
+                            )}`}
+                            target="_blank"
+                            rel="noreferrer"
+                          >
+                            <MessageCircle className="h-3.5 w-3.5 text-emerald-600" /> WhatsApp Order Support
+                          </a>
+                        </Button>
+                      </div>
                     </div>
                   </div>
                 </div>

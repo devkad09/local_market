@@ -16,6 +16,9 @@ import {
   MapPin,
   Phone,
   AlertCircle,
+  TrendingUp,
+  DollarSign,
+  MessageCircle,
 } from "lucide-react";
 import { supabase } from "@/integrations/supabase/client";
 import { useAuth } from "@/lib/auth-context";
@@ -50,6 +53,81 @@ export const Route = createFileRoute("/trader")({
   }),
   component: TraderDashboardPage,
 });
+
+function TraderAnalyticsCards({ traderId }: { traderId: string }) {
+  const { data: orders = [] } = useQuery({
+    queryKey: ["trader-orders", traderId],
+    queryFn: async () => {
+      const { data } = await supabase
+        .from("orders")
+        .select(`
+          total, status, order_items!inner(price, quantity, products!inner(trader_id))
+        `)
+        .eq("order_items.products.trader_id", traderId);
+      return data ?? [];
+    },
+  });
+
+  const { data: products = [] } = useQuery({
+    queryKey: ["trader-products", traderId],
+    queryFn: async () => {
+      const { data } = await supabase.from("products").select("id").eq("trader_id", traderId);
+      return data ?? [];
+    },
+  });
+
+  const totalRevenue = orders.reduce((sum, o: any) => sum + (o.total || 0), 0);
+  const deliveredCount = orders.filter((o: any) => o.status === "delivered").length;
+  const processingCount = orders.filter((o: any) => o.status === "processing" || o.status === "pending").length;
+
+  return (
+    <div className="grid grid-cols-2 gap-4 sm:grid-cols-4 my-6">
+      <div className="rounded-xl border bg-card p-4 shadow-sm">
+        <div className="flex items-center justify-between text-muted-foreground text-xs">
+          <span>Shop Revenue</span>
+          <DollarSign className="h-4 w-4 text-emerald-600" />
+        </div>
+        <div className="mt-2 font-display text-xl font-bold text-foreground">
+          GH₵{totalRevenue.toFixed(2)}
+        </div>
+        <p className="mt-1 text-[11px] text-muted-foreground">Lifetime sales</p>
+      </div>
+
+      <div className="rounded-xl border bg-card p-4 shadow-sm">
+        <div className="flex items-center justify-between text-muted-foreground text-xs">
+          <span>Total Orders</span>
+          <ShoppingBag className="h-4 w-4 text-primary" />
+        </div>
+        <div className="mt-2 font-display text-xl font-bold text-foreground">
+          {orders.length}
+        </div>
+        <p className="mt-1 text-[11px] text-muted-foreground">{processingCount} pending/processing</p>
+      </div>
+
+      <div className="rounded-xl border bg-card p-4 shadow-sm">
+        <div className="flex items-center justify-between text-muted-foreground text-xs">
+          <span>Delivered</span>
+          <CheckCircle2 className="h-4 w-4 text-emerald-600" />
+        </div>
+        <div className="mt-2 font-display text-xl font-bold text-foreground">
+          {deliveredCount}
+        </div>
+        <p className="mt-1 text-[11px] text-muted-foreground">Successful deliveries</p>
+      </div>
+
+      <div className="rounded-xl border bg-card p-4 shadow-sm">
+        <div className="flex items-center justify-between text-muted-foreground text-xs">
+          <span>Active Products</span>
+          <Package className="h-4 w-4 text-amber-600" />
+        </div>
+        <div className="mt-2 font-display text-xl font-bold text-foreground">
+          {products.length}
+        </div>
+        <p className="mt-1 text-[11px] text-muted-foreground">Listed in shop catalog</p>
+      </div>
+    </div>
+  );
+}
 
 function TraderDashboardPage() {
   const { user, roles, loading: authLoading } = useAuth();
@@ -100,17 +178,19 @@ function TraderDashboardPage() {
   // If user is not yet a registered trader
   if (!trader) {
     return (
-      <main className="mx-auto max-w-xl px-4 py-16 text-center">
-        <AlertCircle className="mx-auto h-12 w-12 text-amber-500" />
-        <h1 className="mt-4 font-display text-2xl font-bold">No Shop Found</h1>
-        <p className="mt-2 text-sm text-muted-foreground">
-          You haven't set up a trader shop on Marketplace yet. Apply to open your shop in minutes!
-        </p>
-        <div className="mt-6 flex flex-wrap justify-center gap-3">
-          <Button asChild size="lg">
-            <Link to="/become-trader">Open Your Shop</Link>
-          </Button>
+      <main className="mx-auto max-w-lg px-4 py-16 text-center">
+        <div className="mx-auto inline-flex h-16 w-16 items-center justify-center rounded-full bg-amber-100 dark:bg-amber-950 text-amber-600">
+          <AlertCircle className="h-8 w-8" />
         </div>
+        <h1 className="mt-4 font-display text-2xl font-bold">No Vendor Shop Found</h1>
+        <p className="mt-2 text-sm text-muted-foreground">
+          You are signed in, but you haven't set up a trader shop account yet.
+        </p>
+        <Button asChild className="mt-6 gap-2">
+          <Link to="/become-trader">
+            Apply to Become a Trader <Plus className="h-4 w-4" />
+          </Link>
+        </Button>
       </main>
     );
   }
@@ -136,6 +216,9 @@ function TraderDashboardPage() {
         </div>
       </div>
 
+      {/* Analytics Cards */}
+      <TraderAnalyticsCards traderId={trader.id} />
+
       {/* Main Tabs */}
       <Tabs value={activeTab} onValueChange={setActiveTab} className="mt-8">
         <TabsList className="grid w-full grid-cols-2 max-w-md">
@@ -153,7 +236,7 @@ function TraderDashboardPage() {
           </TabsContent>
 
           <TabsContent value="orders">
-            <TraderOrdersTab traderId={trader.id} />
+            <TraderOrdersTab traderId={trader.id} shopName={trader.shop_name} />
           </TabsContent>
         </div>
       </Tabs>
@@ -470,7 +553,7 @@ function TraderInventoryTab({ traderId }: { traderId: string }) {
 /* =========================================================================
    2. TRADER ORDERS & FULFILMENT TAB
    ========================================================================= */
-function TraderOrdersTab({ traderId }: { traderId: string }) {
+function TraderOrdersTab({ traderId, shopName }: { traderId: string; shopName?: string }) {
   const queryClient = useQueryClient();
 
   // Fetch orders containing products from this trader
@@ -606,6 +689,24 @@ function TraderOrdersTab({ traderId }: { traderId: string }) {
                       "{order.notes}"
                     </p>
                   )}
+                  <div className="pt-2 border-t mt-2">
+                    <Button
+                      asChild
+                      variant="outline"
+                      size="sm"
+                      className="w-full text-xs gap-1.5 text-emerald-700 border-emerald-300 hover:bg-emerald-50 dark:hover:bg-emerald-950"
+                    >
+                      <a
+                        href={`https://wa.me/${order.delivery_phone.replace(/[^0-9]/g, "")}?text=${encodeURIComponent(
+                          `Hello ${order.delivery_name}! This is ${shopName || "your local trader"} updating you on your Marketplace Order #${order.id.slice(0, 8)}. Current fulfillment status: ${order.status.toUpperCase()}.`
+                        )}`}
+                        target="_blank"
+                        rel="noreferrer"
+                      >
+                        <MessageCircle className="h-3.5 w-3.5 text-emerald-600" /> Send WhatsApp Update
+                      </a>
+                    </Button>
+                  </div>
                 </div>
               </div>
             </div>

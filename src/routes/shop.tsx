@@ -331,6 +331,49 @@ function ShopPage() {
             In stock only
           </Button>
 
+          {/* Price Presets */}
+          <div className="flex items-center gap-1.5">
+            <Button
+              variant={search.maxPrice === 50 && !search.minPrice ? "secondary" : "outline"}
+              size="sm"
+              onClick={() =>
+                updateSearch({
+                  minPrice: undefined,
+                  maxPrice: search.maxPrice === 50 ? undefined : 50,
+                })
+              }
+              className="h-9 text-xs"
+            >
+              &lt; GH₵50
+            </Button>
+            <Button
+              variant={search.minPrice === 50 && search.maxPrice === 200 ? "secondary" : "outline"}
+              size="sm"
+              onClick={() =>
+                updateSearch({
+                  minPrice: search.minPrice === 50 ? undefined : 50,
+                  maxPrice: search.maxPrice === 200 ? undefined : 200,
+                })
+              }
+              className="h-9 text-xs"
+            >
+              GH₵50–200
+            </Button>
+            <Button
+              variant={search.minPrice === 200 && !search.maxPrice ? "secondary" : "outline"}
+              size="sm"
+              onClick={() =>
+                updateSearch({
+                  minPrice: search.minPrice === 200 ? undefined : 200,
+                  maxPrice: undefined,
+                })
+              }
+              className="h-9 text-xs"
+            >
+              GH₵200+
+            </Button>
+          </div>
+
           {/* Active filter clear button */}
           {activeFiltersCount > 0 && (
             <Button
