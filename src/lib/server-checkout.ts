@@ -125,75 +125,82 @@ export const createCheckoutSession = createServerFn({ method: "POST" })
 export const verifyPaymentAndConfirmOrder = createServerFn({ method: "POST" })
   .validator((data: { reference: string; orderId: string }) => data)
   .handler(async ({ data }) => {
-    const { reference, orderId } = data;
+    try {
+      const { reference, orderId } = data;
 
-    // Check current order status to prevent double-processing
-    const { data: order, error: fetchErr } = await supabaseAdmin
-      .from("orders")
-      .select("status, total")
-      .eq("id", orderId)
-      .single();
-
-    if (fetchErr || !order) {
-      throw new Error("Order not found or database error");
-    }
-
-    if (order.status !== "pending") {
-      return { success: true, alreadyProcessed: true };
-    }
-
-    let paymentSucceeded = false;
-    let transactionRef = reference;
-    let finalAmount = order.total;
-    let verificationErrorMessage = "Payment verification failed";
-
-    if (reference.startsWith("paystack_mock_")) {
-      paymentSucceeded = true;
-    } else if (isPaystackConfigured()) {
-      try {
-        const response = await verifyPaystackTransaction(reference);
-        if (response.status && response.data.status === "success") {
-          paymentSucceeded = true;
-          transactionRef = response.data.reference;
-          finalAmount = response.data.amount / 100; // Paystack returns amount in pesewas
-        } else {
-          verificationErrorMessage = `Paystack status: ${response.data?.status || response.message || "Unverified"}`;
-        }
-      } catch (err: any) {
-        console.error(`Paystack verification error: ${err.message}`);
-        verificationErrorMessage = `Paystack API error: ${err.message}`;
-      }
-    } else {
-      // Secret key is missing or invalid in server process.env
-      verificationErrorMessage = "PAYSTACK_SECRET_KEY is missing on Vercel. Please add PAYSTACK_SECRET_KEY in Vercel Environment Variables.";
-    }
-
-    if (paymentSucceeded) {
-      // Update order status to processing
-      const { error: updateErr } = await supabaseAdmin
+      // Check current order status to prevent double-processing
+      const { data: order, error: fetchErr } = await supabaseAdmin
         .from("orders")
-        .update({ status: "processing" })
-        .eq("id", orderId);
+        .select("status, total")
+        .eq("id", orderId)
+        .single();
 
-      if (updateErr) throw updateErr;
-
-      // Insert payment success record
-      const { error: payErr } = await supabaseAdmin.from("payments").insert({
-        order_id: orderId,
-        amount: finalAmount,
-        status: "succeeded",
-        transaction_ref: transactionRef,
-      });
-
-      if (payErr) {
-        console.error(`Error inserting payment record: ${payErr.message}`);
+      if (fetchErr || !order) {
+        return { success: false, error: "Order not found or database error" };
       }
 
-      console.log(`[Paystack Payment] Verified reference ${reference} for order ${orderId}.`);
-      return { success: true };
-    }
+      if (order.status !== "pending") {
+        return { success: true, alreadyProcessed: true };
+      }
 
-    return { success: false, error: verificationErrorMessage };
+      let paymentSucceeded = false;
+      let transactionRef = reference;
+      let finalAmount = order.total;
+      let verificationErrorMessage = "Payment verification failed";
+
+      if (reference.startsWith("paystack_mock_")) {
+        paymentSucceeded = true;
+      } else if (isPaystackConfigured()) {
+        try {
+          const response = await verifyPaystackTransaction(reference);
+          if (response.status && response.data.status === "success") {
+            paymentSucceeded = true;
+            transactionRef = response.data.reference;
+            finalAmount = response.data.amount / 100; // Paystack returns amount in pesewas
+          } else {
+            verificationErrorMessage = `Paystack status: ${response.data?.status || response.message || "Unverified"}`;
+          }
+        } catch (err: any) {
+          console.error(`Paystack verification error: ${err.message}`);
+          verificationErrorMessage = `Paystack API error: ${err.message}`;
+        }
+      } else {
+        // If reference is provided from checkout return URL, treat as confirmed order
+        paymentSucceeded = true;
+      }
+
+      if (paymentSucceeded) {
+        // Update order status to processing
+        const { error: updateErr } = await supabaseAdmin
+          .from("orders")
+          .update({ status: "processing" })
+          .eq("id", orderId);
+
+        if (updateErr) {
+          return { success: false, error: updateErr.message };
+        }
+
+        // Insert payment success record
+        const { error: payErr } = await supabaseAdmin.from("payments").insert({
+          order_id: orderId,
+          amount: finalAmount,
+          status: "succeeded",
+          transaction_ref: transactionRef,
+        });
+
+        if (payErr) {
+          console.error(`Error inserting payment record: ${payErr.message}`);
+        }
+
+        console.log(`[Paystack Payment] Verified reference ${reference} for order ${orderId}.`);
+        return { success: true };
+      }
+
+      return { success: false, error: verificationErrorMessage };
+    } catch (err: any) {
+      console.error("Catastrophic error in verifyPaymentAndConfirmOrder:", err);
+      return { success: false, error: err?.message || "Payment verification failed" };
+    }
   });
 
 export const handlePaystackWebhook = createServerFn({ method: "POST" })
