@@ -23,12 +23,16 @@ import { useAuth } from "@/lib/auth-context";
 import { useCart } from "@/lib/cart-context";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
+import { toast } from "sonner";
+import { verifyPaymentAndConfirmOrder } from "@/lib/server-checkout";
 
 const ordersSearchSchema = z.object({
   success: z.union([z.boolean(), z.string()]).optional(),
   session_id: z.string().optional(),
   order_id: z.string().optional(),
   mock: z.union([z.boolean(), z.string()]).optional(),
+  reference: z.string().optional(),
+  trxref: z.string().optional(),
 });
 
 export const Route = createFileRoute("/orders")({
@@ -72,12 +76,42 @@ function OrdersPage() {
   const { clearCart } = useCart();
   const queryClient = useQueryClient();
 
-  // Clear cart if returning from successful Stripe payment checkout
+  // Clear cart and verify Paystack payment if returning from checkout
   useEffect(() => {
-    if (search.success) {
+    const isSuccess = search.success === true || search.success === "true";
+
+    if (isSuccess) {
       clearCart();
     }
-  }, [search.success, clearCart]);
+
+    const ref = search.reference || search.trxref || search.session_id;
+    const orderId = search.order_id;
+
+    if (isSuccess && ref && orderId) {
+      (async () => {
+        try {
+          const res = await verifyPaymentAndConfirmOrder({
+            data: {
+              reference: ref,
+              orderId,
+            },
+          });
+          if (res.success) {
+            if (!res.alreadyProcessed) {
+              toast.success("Paystack payment verified successfully!");
+            }
+            queryClient.invalidateQueries({ queryKey: ["user-orders", user?.id] });
+          } else {
+            toast.error(res.error || "Paystack payment verification failed");
+          }
+        } catch (err: any) {
+          console.error("Payment verification error:", err);
+          toast.error("Failed to verify payment");
+        }
+      })();
+    }
+  }, [search.success, search.reference, search.trxref, search.session_id, search.order_id, clearCart, queryClient, user?.id]);
+
 
   // Real-time listener for orders table changes
   useEffect(() => {

@@ -26,7 +26,7 @@ A modern, type-safe, multi-vendor e-commerce platform that connects local artisa
 * **Database & Auth**: [Supabase](https://supabase.com/) (PostgreSQL, Row Level Security (RLS), triggers, and auth functions)
 * **State Management**: [TanStack Query (React Query)](https://tanstack.com/query/v1)
 * **Form Management**: [React Hook Form](https://react-hook-form.com/) & [Zod](https://zod.dev/) (validation)
-* **Payments**: [Stripe](https://stripe.com/)
+* **Payments**: [Paystack](https://paystack.com/) (Mobile Money & Card Payments)
 * **Icons & Notifications**: [Lucide React](https://lucide.dev/) & [Sonner](https://github.com/emilkowalski/sonner)
 
 ---
@@ -44,7 +44,7 @@ A modern, type-safe, multi-vendor e-commerce platform that connects local artisa
 │   ├── hooks/           # Custom React hooks (e.g. cart context hooks)
 │   ├── integrations/
 │   │   └── supabase/    # Supabase Client setup, types, and auth middlewares
-│   ├── lib/             # Utility functions, sample data, and seeding helpers
+│   ├── lib/             # Utility functions, sample data, paystack payment helpers
 │   ├── routes/          # File-based routes (TanStack Start app routes)
 │   │   ├── __root.tsx   # Global layout shell & providers
 │   │   ├── admin.tsx    # Admin Dashboard interface
@@ -74,7 +74,7 @@ The PostgreSQL schema is managed in the [supabase/migrations/](file:///Users/kad
 3. **`traders`**: Details of vendor shops (`shop_name`, `address`, `status: pending | approved | suspended`).
 4. **`products`**: Multi-vendor product items including pricing, stock quantities, and associations to a category and trader.
 5. **`orders` / `order_items`**: Manages orders placed by customers, mapping products from multiple vendors.
-6. **`payments`**: Records payment statuses and Stripe session identifiers.
+6. **`payments`**: Records payment statuses and Paystack transaction identifiers.
 
 ---
 
@@ -90,7 +90,7 @@ VITE_SUPABASE_URL=your_supabase_project_url
 VITE_SUPABASE_PUBLISHABLE_KEY=your_supabase_anon_key
 # Server-side variables if executing server functions:
 SUPABASE_SERVICE_ROLE_KEY=your_supabase_service_role_key
-STRIPE_SECRET_KEY=your_stripe_secret_key
+PAYSTACK_SECRET_KEY=your_paystack_secret_key
 ```
 
 ### 3. Installation

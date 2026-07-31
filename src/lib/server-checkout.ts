@@ -1,10 +1,16 @@
 import { createServerFn } from "@tanstack/react-start";
 import { getRequest } from "@tanstack/react-start/server";
-import { getStripe, isStripeConfigured } from "@/lib/stripe";
+import {
+  initializePaystackTransaction,
+  isPaystackConfigured,
+  verifyPaystackTransaction,
+  verifyPaystackWebhookSignature,
+} from "@/lib/paystack";
 import { supabaseAdmin } from "@/integrations/supabase/client.server";
 
 export type CheckoutSessionInput = {
   orderId: string;
+  email: string;
   items: Array<{
     name: string;
     price: number;
@@ -19,112 +25,159 @@ export const createCheckoutSession = createServerFn({ method: "POST" })
   .handler(async ({ data }) => {
     const request = getRequest();
     const origin = request ? new URL(request.url).origin : "http://localhost:3000";
-    const { orderId, items, deliveryFee = 0 } = data;
+    const { orderId, email, items, deliveryFee = 0 } = data;
 
     if (!orderId || !items || items.length === 0) {
       throw new Error("Missing required orderId or items");
     }
 
-    const lineItems = items.map((item) => ({
-      price_data: {
-        currency: "gbp",
-        product_data: {
-          name: item.name,
-          images: item.image_url ? [item.image_url] : [],
-        },
-        unit_amount: Math.round(item.price * 100),
-      },
-      quantity: item.quantity,
-    }));
+    const totalAmount = items.reduce((sum, item) => sum + item.price * item.quantity, 0) + deliveryFee;
 
-    if (deliveryFee > 0) {
-      lineItems.push({
-        price_data: {
-          currency: "gbp",
-          product_data: {
-            name: "Local Delivery Fee",
-            images: [],
-          },
-          unit_amount: Math.round(deliveryFee * 100),
-        },
-        quantity: 1,
-      });
-    }
-
-    if (isStripeConfigured()) {
-      const stripe = getStripe();
-      const session = await stripe.checkout.sessions.create({
-        payment_method_types: ["card"],
-        line_items: lineItems,
-        mode: "payment",
-        success_url: `${origin}/orders?success=true&session_id={CHECKOUT_SESSION_ID}&order_id=${orderId}`,
-        cancel_url: `${origin}/cart?canceled=true`,
+    if (isPaystackConfigured()) {
+      const response = await initializePaystackTransaction({
+        email,
+        amount: totalAmount,
+        callbackUrl: `${origin}/orders?success=true&order_id=${orderId}`,
         metadata: {
           order_id: orderId,
+          custom_fields: [
+            {
+              display_name: "Order ID",
+              variable_name: "order_id",
+              value: orderId,
+            },
+          ],
         },
       });
 
+      // Store the transaction reference in the stripe_session_id column (used as payment provider ref)
       await supabaseAdmin
         .from("orders")
-        .update({ stripe_session_id: session.id })
+        .update({ stripe_session_id: response.data.reference })
         .eq("id", orderId);
 
-      return { url: session.url, sessionId: session.id, mock: false };
+      return { url: response.data.authorization_url, sessionId: response.data.reference, mock: false };
     } else {
-      const mockSessionId = `cs_test_dev_${Date.now()}`;
+      const mockReference = `paystack_mock_${Date.now()}`;
 
       await supabaseAdmin
         .from("orders")
-        .update({ stripe_session_id: mockSessionId })
+        .update({ stripe_session_id: mockReference })
         .eq("id", orderId);
 
-      const mockSuccessUrl = `${origin}/orders?success=true&session_id=${mockSessionId}&order_id=${orderId}&mock=true`;
+      const mockSuccessUrl = `${origin}/orders?success=true&reference=${mockReference}&order_id=${orderId}&mock=true`;
 
-      return { url: mockSuccessUrl, sessionId: mockSessionId, mock: true };
+      return { url: mockSuccessUrl, sessionId: mockReference, mock: true };
     }
   });
 
-export const processWebhookPayload = createServerFn({ method: "POST" })
-  .validator((data: { type: string; data: { object: any } }) => data)
+export const verifyPaymentAndConfirmOrder = createServerFn({ method: "POST" })
+  .validator((data: { reference: string; orderId: string }) => data)
   .handler(async ({ data }) => {
-    const event = data;
+    const { reference, orderId } = data;
 
-    if (event.type === "checkout.session.completed") {
-      const session = event.data.object;
-      const orderId = session.metadata?.order_id;
-      const sessionId = session.id;
+    // Check current order status to prevent double-processing
+    const { data: order, error: fetchErr } = await supabaseAdmin
+      .from("orders")
+      .select("status, total")
+      .eq("id", orderId)
+      .single();
 
-      let targetOrderId = orderId;
+    if (fetchErr || !order) {
+      throw new Error("Order not found or database error");
+    }
 
-      if (!targetOrderId && sessionId) {
-        const { data: existingOrder } = await supabaseAdmin
-          .from("orders")
-          .select("id")
-          .eq("stripe_session_id", sessionId)
-          .single();
+    if (order.status !== "pending") {
+      return { success: true, alreadyProcessed: true };
+    }
 
-        if (existingOrder) {
-          targetOrderId = existingOrder.id;
+    let paymentSucceeded = false;
+    let transactionRef = reference;
+    let finalAmount = order.total;
+
+    if (reference.startsWith("paystack_mock_")) {
+      paymentSucceeded = true;
+    } else if (isPaystackConfigured()) {
+      try {
+        const response = await verifyPaystackTransaction(reference);
+        if (response.status && response.data.status === "success") {
+          paymentSucceeded = true;
+          transactionRef = response.data.reference;
+          finalAmount = response.data.amount / 100; // Paystack returns amount in pesewas
         }
+      } catch (err: any) {
+        console.error(`Paystack verification error: ${err.message}`);
+      }
+    }
+
+    if (paymentSucceeded) {
+      // Update order status to processing
+      const { error: updateErr } = await supabaseAdmin
+        .from("orders")
+        .update({ status: "processing" })
+        .eq("id", orderId);
+
+      if (updateErr) throw updateErr;
+
+      // Insert payment success record
+      const { error: payErr } = await supabaseAdmin.from("payments").insert({
+        order_id: orderId,
+        amount: finalAmount,
+        status: "succeeded",
+        transaction_ref: transactionRef,
+      });
+
+      if (payErr) {
+        console.error(`Error inserting payment record: ${payErr.message}`);
       }
 
-      if (targetOrderId) {
-        await supabaseAdmin
+      console.log(`[Paystack Payment] Verified reference ${reference} for order ${orderId}.`);
+      return { success: true };
+    }
+
+    return { success: false, error: "Payment verification failed" };
+  });
+
+export const handlePaystackWebhook = createServerFn({ method: "POST" })
+  .validator((data: { rawBody: string; signature: string }) => data)
+  .handler(async ({ data }) => {
+    const { rawBody, signature } = data;
+    if (!verifyPaystackWebhookSignature(rawBody, signature)) {
+      throw new Error("Invalid Paystack webhook signature");
+    }
+
+    const payload = JSON.parse(rawBody);
+
+    if (payload.event === "charge.success") {
+      const reference = payload.data.reference;
+      const orderId = payload.data.metadata?.order_id;
+      const amount = payload.data.amount / 100;
+
+      if (orderId) {
+        const { data: order } = await supabaseAdmin
           .from("orders")
-          .update({ status: "processing" })
-          .eq("id", targetOrderId);
+          .select("status")
+          .eq("id", orderId)
+          .single();
 
-        const totalAmount = session.amount_total ? session.amount_total / 100 : 0;
-        await supabaseAdmin.from("payments").insert({
-          order_id: targetOrderId,
-          amount: totalAmount,
-          status: "succeeded",
-          transaction_ref: String(session.payment_intent || session.id),
-        });
+        if (order && order.status === "pending") {
+          await supabaseAdmin
+            .from("orders")
+            .update({ status: "processing" })
+            .eq("id", orderId);
 
-        console.log(`[Stripe Webhook] Order ${targetOrderId} marked as processing & payment recorded.`);
+          await supabaseAdmin.from("payments").insert({
+            order_id: orderId,
+            amount,
+            status: "succeeded",
+            transaction_ref: reference,
+          });
+
+          console.log(`[Paystack Webhook] Confirmed payment for order ${orderId} ref ${reference}`);
+        }
       }
     }
 
     return { received: true };
   });
+

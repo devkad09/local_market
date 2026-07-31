@@ -17,7 +17,7 @@ import {
 import { supabase } from "@/integrations/supabase/client";
 import { useAuth } from "@/lib/auth-context";
 import { useCart, type CartItem } from "@/lib/cart-context";
-import { createCheckoutSession, processWebhookPayload } from "@/lib/server-checkout";
+import { createCheckoutSession } from "@/lib/server-checkout";
 import { sendOrderEmailNotification } from "@/lib/notifications";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -141,10 +141,11 @@ function CartPage() {
         },
       }).catch((err) => console.error("Notification error:", err));
 
-      // 3. Create Stripe Checkout Session via server function
+      // 3. Create Checkout Session via server function
       const sessionData = await createCheckoutSession({
         data: {
           orderId: order.id,
+          email: user.email || "customer@example.com",
           items: items.map((i) => ({
             name: i.product.name,
             price: i.product.price,
@@ -161,23 +162,6 @@ function CartPage() {
 
       // Clear local cart state before redirect
       clearCart();
-
-      // If mock dev mode, trigger simulated webhook payload to process payment
-      if (sessionData.mock) {
-        await processWebhookPayload({
-          data: {
-            type: "checkout.session.completed",
-            data: {
-              object: {
-                id: sessionData.sessionId,
-                amount_total: Math.round(grandTotal * 100),
-                payment_intent: `pi_mock_${Date.now()}`,
-                metadata: { order_id: order.id },
-              },
-            },
-          },
-        });
-      }
 
       toast.success("Redirecting to secure payment checkout…");
       window.location.href = sessionData.url;
@@ -409,13 +393,18 @@ function CartPage() {
               {isSubmitting
                 ? "Placing Order…"
                 : user
-                ? "Place Order & Pay"
+                ? "Pay with Paystack (MoMo & Card)"
                 : "Sign in to Place Order"}
             </Button>
 
-            <div className="flex items-center justify-center gap-2 text-[11px] text-muted-foreground pt-2">
-              <ShieldCheck className="h-4 w-4 text-emerald-600" />
-              <span>Secure checkout with local trader protection</span>
+            <div className="space-y-1.5 pt-2 text-center">
+              <div className="flex items-center justify-center gap-2 text-[11px] text-muted-foreground">
+                <ShieldCheck className="h-4 w-4 text-emerald-600" />
+                <span>Secured by <strong>Paystack</strong> — Mobile Money & Cards supported</span>
+              </div>
+              <p className="text-[10px] text-muted-foreground opacity-75">
+                Supports MTN Mobile Money, Telecel Cash, AT Money & Bank Cards
+              </p>
             </div>
           </form>
         </div>
