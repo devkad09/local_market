@@ -1,12 +1,24 @@
 import { createContext, useContext, useEffect, useState, type ReactNode } from "react";
-import type { Session, User } from "@supabase/supabase-js";
+import { onAuthStateChanged, signOut as fbSignOut, type User as FirebaseUser } from "firebase/auth";
+import { auth } from "@/lib/firebase";
 import { supabase } from "@/integrations/supabase/client";
 
 export type AppRole = "customer" | "trader" | "admin";
 
+export interface AppUser {
+  id: string;
+  uid: string;
+  email: string | null;
+  displayName: string | null;
+  user_metadata: {
+    name?: string;
+    full_name?: string;
+  };
+}
+
 interface AuthCtx {
-  user: User | null;
-  session: Session | null;
+  user: AppUser | null;
+  firebaseUser: FirebaseUser | null;
   roles: AppRole[];
   loading: boolean;
   refreshRoles: () => Promise<void>;
@@ -16,8 +28,8 @@ interface AuthCtx {
 const Ctx = createContext<AuthCtx | undefined>(undefined);
 
 export function AuthProvider({ children }: { children: ReactNode }) {
-  const [session, setSession] = useState<Session | null>(null);
-  const [user, setUser] = useState<User | null>(null);
+  const [firebaseUser, setFirebaseUser] = useState<FirebaseUser | null>(null);
+  const [user, setUser] = useState<AppUser | null>(null);
   const [roles, setRoles] = useState<AppRole[]>([]);
   const [loading, setLoading] = useState(true);
 
@@ -27,24 +39,29 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   };
 
   useEffect(() => {
-    const { data: sub } = supabase.auth.onAuthStateChange((_e, s) => {
-      setSession(s);
-      setUser(s?.user ?? null);
-      if (s?.user) {
-        setTimeout(() => loadRoles(s.user.id), 0);
+    const unsubscribe = onAuthStateChanged(auth, async (fbUser) => {
+      setFirebaseUser(fbUser);
+      if (fbUser) {
+        const appUser: AppUser = {
+          id: fbUser.uid,
+          uid: fbUser.uid,
+          email: fbUser.email,
+          displayName: fbUser.displayName,
+          user_metadata: {
+            name: fbUser.displayName ?? fbUser.email?.split("@")[0] ?? "",
+            full_name: fbUser.displayName ?? "",
+          },
+        };
+        setUser(appUser);
+        await loadRoles(fbUser.uid);
       } else {
+        setUser(null);
         setRoles([]);
       }
-    });
-
-    supabase.auth.getSession().then(({ data }) => {
-      setSession(data.session);
-      setUser(data.session?.user ?? null);
-      if (data.session?.user) loadRoles(data.session.user.id);
       setLoading(false);
     });
 
-    return () => sub.subscription.unsubscribe();
+    return () => unsubscribe();
   }, []);
 
   const refreshRoles = async () => {
@@ -52,12 +69,14 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   };
 
   const signOut = async () => {
-    await supabase.auth.signOut();
+    await fbSignOut(auth);
+    setUser(null);
+    setFirebaseUser(null);
     setRoles([]);
   };
 
   return (
-    <Ctx.Provider value={{ user, session, roles, loading, refreshRoles, signOut }}>
+    <Ctx.Provider value={{ user, firebaseUser, roles, loading, refreshRoles, signOut }}>
       {children}
     </Ctx.Provider>
   );

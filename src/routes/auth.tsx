@@ -2,6 +2,8 @@ import { createFileRoute, useNavigate, useSearch } from "@tanstack/react-router"
 import { useState, useEffect } from "react";
 import { z } from "zod";
 import { toast } from "sonner";
+import { createUserWithEmailAndPassword, signInWithEmailAndPassword, signInWithPopup, updateProfile } from "firebase/auth";
+import { auth, googleProvider } from "@/lib/firebase";
 import { supabase } from "@/integrations/supabase/client";
 import { useAuth } from "@/lib/auth-context";
 import { Button } from "@/components/ui/button";
@@ -44,10 +46,14 @@ function AuthPage() {
     if (!emailR.success) return toast.error(emailR.error.issues[0].message);
     if (!passR.success) return toast.error(passR.error.issues[0].message);
     setIsLoading(true);
-    const { error } = await supabase.auth.signInWithPassword({ email: emailR.data, password: passR.data });
-    setIsLoading(false);
-    if (error) return toast.error(error.message);
-    toast.success("Welcome back");
+    try {
+      await signInWithEmailAndPassword(auth, emailR.data, passR.data);
+      toast.success("Welcome back");
+    } catch (err: any) {
+      toast.error(err.message || "Failed to sign in");
+    } finally {
+      setIsLoading(false);
+    }
   };
 
   const handleSignUp = async (e: React.FormEvent<HTMLFormElement>) => {
@@ -60,26 +66,50 @@ function AuthPage() {
     if (!emailR.success) return toast.error(emailR.error.issues[0].message);
     if (!passR.success) return toast.error(passR.error.issues[0].message);
     setIsLoading(true);
-    const { error } = await supabase.auth.signUp({
-      email: emailR.data,
-      password: passR.data,
-      options: { data: { name }, emailRedirectTo: window.location.origin },
-    });
-    setIsLoading(false);
-    if (error) return toast.error(error.message);
-    toast.success("Account created — welcome!");
+    try {
+      const userCredential = await createUserWithEmailAndPassword(auth, emailR.data, passR.data);
+      if (userCredential.user) {
+        await updateProfile(userCredential.user, { displayName: name });
+        // Create user profile & default role in Supabase
+        await supabase.from("profiles").upsert({
+          id: userCredential.user.uid,
+          full_name: name,
+          email: emailR.data,
+        });
+        await supabase.from("user_roles").upsert(
+          { user_id: userCredential.user.uid, role: "customer" },
+          { onConflict: "user_id,role" }
+        );
+      }
+      toast.success("Account created — welcome!");
+    } catch (err: any) {
+      toast.error(err.message || "Failed to create account");
+    } finally {
+      setIsLoading(false);
+    }
   };
 
   const handleGoogle = async () => {
     setIsLoading(true);
-    const { error } = await supabase.auth.signInWithOAuth({
-      provider: "google",
-      options: {
-        redirectTo: window.location.origin,
-      },
-    });
-    setIsLoading(false);
-    if (error) return toast.error(error.message ?? "Google sign-in failed");
+    try {
+      const res = await signInWithPopup(auth, googleProvider);
+      if (res.user) {
+        await supabase.from("profiles").upsert({
+          id: res.user.uid,
+          full_name: res.user.displayName || res.user.email?.split("@")[0] || "",
+          email: res.user.email,
+        });
+        await supabase.from("user_roles").upsert(
+          { user_id: res.user.uid, role: "customer" },
+          { onConflict: "user_id,role" }
+        );
+      }
+      toast.success("Signed in with Google");
+    } catch (err: any) {
+      toast.error(err.message || "Google sign-in failed");
+    } finally {
+      setIsLoading(false);
+    }
   };
 
   return (
